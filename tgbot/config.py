@@ -64,7 +64,6 @@ def load_config(database_url: Optional[str], path: str = None):
             redis_db_jobstore=env.int("REDIS_DB_JOBESTORE", default=1)
         ),
         misc=Miscellaneous(
-            provider_token_ukassa=env.str('PROVIDER_TOKEN_UKASSA'),
             provider_token_sber=env.str('PROVIDER_TOKEN_SBER')
         )
     )

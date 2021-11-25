@@ -5,7 +5,7 @@ from tgbot.misc.secondary_functions import User, Item, ItemInBasket
 
 class UserTexts:
 
-    PHOTO_LOGO = 'AgACAgIAAxkBAANDYXQ04ysmoq651-Pz5Go0AZq-AgEAAk63MRuX3KBLy3Tcto6m0FUBAAMCAAN5AAMhBA'
+    PHOTO_LOGO = 'AgACAgIAAxkBAAIWBmFByRpoLPx7Ikndq4BICnMrTZHhAALGsTEbrKwRSoF1rDehuqjJAQADAgADeQADIAQ'
 
     USER_HELP = 'Вы находитесь в разделе "Помощь"🆘\n\n' \
                 'Навигация в боте возможна при помощи команд, либо при помощи всплывающих кнопок.\n\n' \
