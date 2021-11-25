@@ -13,7 +13,7 @@ def clear_basket_on_schedule(obj: typing.Union[Message, CallbackQuery], added_at
     scheduler = get_scheduler(obj)
     func = delete_all_items_from_basket
     kwargs = dict(dsn=dsn, telegram_id=obj.from_user.id)
-    delete_time = added_at + datetime.timedelta(hours=3) + datetime.timedelta(seconds=30)
+    delete_time = added_at + datetime.timedelta(hours=3) + datetime.timedelta(hours=24)
     job_id = f'clear_basket_{obj.from_user.id}'
     scheduler.add_job(func,
                       kwargs=kwargs,
