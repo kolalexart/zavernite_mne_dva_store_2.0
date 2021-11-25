@@ -1,0 +1,10 @@
+aiogram~=2.15
+aiohttp
+aioredis~=2.0.0
+redis~=4.0.2
+environs~=8.0.0
+asyncpg~=0.24.0
+python-dotenv
+apscheduler~=3.8.1
+pytz~=2021.1
+pydantic
