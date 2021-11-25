@@ -61,7 +61,7 @@ def register_all_handlers(dp):
     register_user(dp)
     register_telegram_built_in_payments(dp)
     register_error(dp)
-    register_echo(dp)
+    # register_echo(dp)
 
 
 async def main():
