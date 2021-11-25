@@ -18,7 +18,7 @@ from tgbot.handlers.admins.admin_add_item import register_admin_add_item
 from tgbot.handlers.admins.admin_change_item import register_admin_change_item
 from tgbot.handlers.admins.admin_change_or_delete_item_category import register_admin_change_or_delete_item_category
 from tgbot.handlers.admins.admin_main import register_admin_main
-from tgbot.handlers.echo import register_echo
+# from tgbot.handlers.echo import register_echo
 from tgbot.handlers.error_handler import register_error
 from tgbot.handlers.inline_mode import register_inline_mode
 from tgbot.handlers.payments.telegram_built_in.telegram_payment import register_telegram_built_in_payments
