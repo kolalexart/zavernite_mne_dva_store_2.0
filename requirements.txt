@@ -7,4 +7,4 @@ asyncpg~=0.24.0
 python-dotenv
 apscheduler~=3.8.1
 pytz~=2021.1
-pydantic
+pydantic~=1.8.2

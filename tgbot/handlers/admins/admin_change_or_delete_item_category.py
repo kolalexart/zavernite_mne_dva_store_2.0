@@ -3,6 +3,7 @@ import typing
 from aiogram import Dispatcher
 from aiogram.dispatcher import FSMContext
 from aiogram.types import Message, ReplyKeyboardRemove, ReplyKeyboardMarkup
+from asyncpg import ForeignKeyViolationError
 
 from tgbot.handlers.admins.admins_secondary import is_requerid_format_item_category, admin_filters, \
     get_data_from_state, is_requerid_format_yes_or_no_markup, is_requerid_format_item_category_while_renaiming, \
@@ -60,7 +61,7 @@ async def choose_item_category_name(message: Message, state: FSMContext, success
         if for_subcategory:
             list_subcategories = await get_items_subcategories(message, item_category_code)
             if list_subcategories and check_on_without_subcategory(list_subcategories):
-                await message.answer(f'В категории <b>"{item_category_name}"</b> нет подкатегорий. Вы можете '
+                await message.answer(f'🔴 В категории <b>"{item_category_name}"</b> нет подкатегорий. Вы можете '
                                      f'удалить или изменить всю категорию через соответствующий пункт меню '
                                      f'администраторов /admins_menu', reply_markup=ReplyKeyboardRemove())
                 await state.finish()
@@ -88,19 +89,6 @@ async def choose_item_category_name(message: Message, state: FSMContext, success
 
 async def choose_item_category_name_for_deleting(message: Message, state: FSMContext):
     await choose_item_category_name(message, state, DeleteItemCategory, yes_no_reply_markup())
-    # if await is_requerid_format_item_category(message, state):
-    #     item_category_name = message.text.capitalize()
-    #     await state.update_data(item_category_name=item_category_name)
-    #     await message.answer(f'❗❗❗ Вы выбрали категорию товаров <b>{item_category_name}</b>. Будет удалена категория '
-    #                          f'товаров и все товары, находящиеся в ней. Это действие необратимо. Вы уверены, что '
-    #                          f'хотите удалить все товары из категории <b>{item_category_name}</b>?',
-    #                          reply_markup=yes_no_reply_markup())
-    #     await DeleteItemCategory.next()
-    # else:
-    #     list_categories = (await get_data_from_state(state, 'list_categories'))[0]
-    #     await message.answer('🔴 Такой категории товаров не существует. Пожалуйста, выберите категорию из предложенных '
-    #                          'ниже либо отмените операцию:',
-    #                          reply_markup=choose_item_category_name_markup(list_categories))
 
 
 async def confirm_deleting_item_category(message: Message, state: FSMContext):
@@ -109,12 +97,24 @@ async def confirm_deleting_item_category(message: Message, state: FSMContext):
         item_category_name = (await get_data_from_state(state, 'item_category_name'))[0]
         confirmation = message.text.lower()
         if confirmation == 'да':
-            quantity_deleted_items = await db.delete_items_from_items(item_category_name=item_category_name)
-            await message.answer(f'🟢 Категория товаров <b>"{item_category_name}"</b> и все товары из нее '
-                                 f'успешно удалены\nКоличество удаленных товаров в категории '
-                                 f'<b>"{item_category_name}"</b>: {quantity_deleted_items}',
-                                 reply_markup=ReplyKeyboardRemove())
-            await state.finish()
+            try:
+                quantity_deleted_items = await db.delete_items_from_items(item_category_name=item_category_name)
+            except ForeignKeyViolationError as err:
+                await message.answer(f'🔴 Вы не можете удалить всю категорию товаров по причине того, что как минимум '
+                                     f'один из товаров из категории "<b>{item_category_name}</b>" находится у '
+                                     f'кого-то в корзине. Вы можете ограничить видимость товаров в этой категории либо '
+                                     f'поставить их количество, равное 0. В таком случае их будет невозможно купить. '
+                                     f'В течение 24 часов товары автоматически удалятся из корзины и '
+                                     f'их можно будет удалить из базы данных.\n\nОписание ошибки:\n'
+                                     f'<i>{err.as_dict().get("detail")}</i>',
+                                     reply_markup=ReplyKeyboardRemove())
+                await state.finish()
+            else:
+                await message.answer(f'🟢 Категория товаров <b>"{item_category_name}"</b> и все товары из нее '
+                                     f'успешно удалены\nКоличество удаленных товаров в категории '
+                                     f'<b>"{item_category_name}"</b>: {quantity_deleted_items}',
+                                     reply_markup=ReplyKeyboardRemove())
+                await state.finish()
         if confirmation == 'нет':
             await message.answer(f'🟢 Удалении категории товаров <b>"{item_category_name}"</b> успешно отменено ',
                                  reply_markup=ReplyKeyboardRemove())
@@ -169,19 +169,6 @@ async def choose_item_subcategory_name(message: Message, state: FSMContext, succ
 
 async def choose_item_subcategory_name_for_deleting_subcategory(message: Message, state: FSMContext):
     await choose_item_subcategory_name(message, state, DeleteItemSubCategory, yes_no_reply_markup())
-    # item_category_name, item_category_code, list_subcategories = \
-    #     await get_data_from_state(state, 'item_category_name', 'item_category_code', 'list_subcategories')
-    # if is_requerid_format_item_category(message, list_subcategories):
-    #     item_subcategory_name, item_subcategory_code = get_name_and_code(message, list_subcategories)
-    #     success_message = await create_success_message(state, item_category_name, item_subcategory_name)
-    #     await state.update_data(item_subcategory_name=item_subcategory_name,
-    #                             item_subcategory_code=item_subcategory_code)
-    #     await message.answer(success_message, reply_markup=yes_no_reply_markup())
-    #     await DeleteItemSubCategory.next()
-    # else:
-    #     await message.answer('🔴 Такой подкатегории товаров не существует. Пожалуйста, выберите подкатегорию из '
-    #                          'предложенных ниже либо отмените операцию:',
-    #                          reply_markup=choose_item_subcategory_name_markup(list_subcategories))
 
 
 async def confirm_deleting_item_subcategory(message: Message, state: FSMContext):
@@ -191,14 +178,27 @@ async def confirm_deleting_item_subcategory(message: Message, state: FSMContext)
                                                                               'item_category_name')
         confirmation = message.text.lower()
         if confirmation == 'да':
-            quantity_deleted_items = await db.delete_items_from_items(item_category_name=item_category_name,
-                                                                      item_subcategory_name=item_subcategory_name)
-            await message.answer(f'🟢 Подкатегория товаров <b>"{item_subcategory_name}"</b> в категории '
-                                 f'<b>"{item_category_name}"</b> и все товары из нее '
-                                 f'успешно удалены.\nКоличество удаленных товаров в категории '
-                                 f'<b>"{item_category_name}"</b> в подкатегории <b>"{item_category_name}"</b>: '
-                                 f'{quantity_deleted_items}', reply_markup=ReplyKeyboardRemove())
-            await state.finish()
+            try:
+                quantity_deleted_items = await db.delete_items_from_items(item_category_name=item_category_name,
+                                                                          item_subcategory_name=item_subcategory_name)
+            except ForeignKeyViolationError as err:
+                await message.answer(f'🔴 Вы не можете удалить всю категорию товаров по причине того, что как минимум '
+                                     f'один из товаров из категории "<b>{item_category_name}</b>" подкатегории '
+                                     f'"<b>{item_subcategory_name}</b>" находится у кого-то в корзине. Вы можете '
+                                     f'ограничить видимость товаров в этой подкатегории либо поставить их количество, '
+                                     f'равное 0. В таком случае их будет невозможно купить. В течение 24 часов товары '
+                                     f'автоматически удалятся из корзины и их можно будет удалить из базы данных.'
+                                     f'\n\nОписание ошибки:\n'
+                                     f'<i>{err.as_dict().get("detail")}</i>',
+                                     reply_markup=ReplyKeyboardRemove())
+                await state.finish()
+            else:
+                await message.answer(f'🟢 Подкатегория товаров <b>"{item_subcategory_name}"</b> в категории '
+                                     f'<b>"{item_category_name}"</b> и все товары из нее '
+                                     f'успешно удалены.\nКоличество удаленных товаров в категории '
+                                     f'<b>"{item_category_name}"</b> в подкатегории <b>"{item_category_name}"</b>: '
+                                     f'{quantity_deleted_items}', reply_markup=ReplyKeyboardRemove())
+                await state.finish()
         if confirmation == 'нет':
             await message.answer(f'🟢 Удалении подкатегории товаров <b>"{item_subcategory_name}"</b> в '
                                  f'категории <b>"{item_category_name}"</b> успешно отменено ',

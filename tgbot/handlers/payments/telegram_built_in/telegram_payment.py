@@ -1,3 +1,4 @@
+import datetime
 import logging
 import typing
 
@@ -7,60 +8,122 @@ from aiogram.types import CallbackQuery, LabeledPrice, ShippingQuery, PreCheckou
 from apscheduler.jobstores.base import JobLookupError
 
 from tgbot.handlers.payments.telegram_built_in.shipping_options import ShippingOptions
-from tgbot.handlers.user import get_item, show_basket
-from tgbot.keyboards.menu_keyboards.users_keyboards.menu_inline import buy_item
+from tgbot.handlers.user import get_item, prepare_markup_for_basket, on_show_basket
+from tgbot.keyboards.menu_keyboards.users_keyboards.menu_inline import buy_item, categories_keyboard
 from tgbot.misc.schedule import remove_clear_basket_job
-from tgbot.misc.secondary_functions import get_db, get_config, get_item_in_basket_data, Item
+from tgbot.misc.secondary_functions import get_db, get_config, get_item_in_basket_data, Item, delete_message
+from tgbot.misc.texts import UserTexts
 
 logger = logging.getLogger(__name__)
 
 
-async def prepare_data_for_item_invoice(call: CallbackQuery, callback_data: dict) -> \
-        typing.Tuple[str, str, str, typing.List[LabeledPrice], str, int]:
+async def is_item_changed(target: typing.Union[CallbackQuery, Item],
+                          item_id: typing.Optional[int], item_quantity: int):
+    if not target:
+        return None, None, None
+
+    item = target if isinstance(target, Item) else await get_item(target, int(item_id))
+
+    if item.item_discontinued or item.item_total_quantity == 0:
+        return item, True, None
+    elif item_quantity > item.item_total_quantity:
+        new_quantity = item.item_total_quantity
+        return item, False, new_quantity
+    else:
+        return item, False, None
+
+
+async def check_item(target: typing.Union[CallbackQuery, Item],
+                     item_id: typing.Optional[int], item_quantity: int):
+    item, item_discontinued, new_quantity = await is_item_changed(target, item_id, item_quantity)
+    if not any((item, item_discontinued, new_quantity)):
+        return False, (None, None)
+    elif item and item_discontinued:
+        return False, (None, None)
+    elif item and new_quantity:
+        return True, (item, new_quantity)
+    else:
+        return True, (item, None)
+
+
+async def prepare_data_for_item_invoice(call: CallbackQuery, callback_data: dict) -> typing.Tuple[bool, tuple]:
     prices = []
     item_id = callback_data.get("item_id")
     quantity = callback_data.get('quantity')
     item = await get_item(call, int(item_id))
-    name = item.item_name
-    amount = item.item_price * int(quantity) * 100
-    title = (name + ' - ' + quantity + ' шт.')[0:32]
-    label = f'{name} - {quantity} шт.'
-    payload = f'{item_id}:{quantity}:i'
-    price = LabeledPrice(label=label, amount=amount)
-    prices.append(price)
-    total_price = amount // 100
-    description = item.item_short_description if item.item_short_description else item.item_description
-    photo_url = item.item_photo_url
-    return payload, title, description, prices, photo_url, total_price
+    ok, (item, new_quantity) = await check_item(item, None, int(quantity))
+    if ok and item and new_quantity:
+        await call.answer(f'Максимально возможное количество товара: "{item.item_name}", доступное к покупке '
+                          f'{new_quantity}', show_alert=True)
+        return False, (None, None, None, None, None, None)
+    elif ok:
+        name = item.item_name
+        amount = item.item_price * int(quantity) * 100
+        title = (name + ' - ' + quantity + ' шт.')[0:32]
+        label = f'{name} - {quantity} шт.'
+        payload = f'{item_id}:{quantity}:i'
+        price = LabeledPrice(label=label, amount=amount)
+        prices.append(price)
+        total_price = amount // 100
+        description = item.item_short_description if item.item_short_description else item.item_description
+        photo_url = item.item_photo_url
+        return True, (payload, title, description, prices, photo_url, total_price)
+    else:
+        if await delete_message(call, logger, UserTexts.PHOTO_LOGO, reboot_text=UserTexts.USER_REBOOT_BOT):
+            await call.message.answer_photo(UserTexts.PHOTO_LOGO,
+                                            UserTexts.user_products_out_of_stock_while_change(item_id),
+                                            reply_markup=await categories_keyboard(call))
+            return False, (None, None, None, None, None, None)
 
 
-async def prepare_data_for_basket_invoice(call: CallbackQuery) -> \
-        typing.Tuple[str, str, str, typing.List[LabeledPrice], str, int]:
+async def prepare_data_for_basket_invoice(call: CallbackQuery) -> typing.Tuple[bool, tuple]:
     prices = []
     total_price = 0
     payload = str()
     description = f"Счет на ваш заказ:"
     db = get_db(call)
     items_from_basket = await db.select_items_from_basket(call.from_user.id)
+    alert_text = str()
+    updated_items_in_basket_list = list()
+    deleted_items_in_basket_list = list()
     for item in items_from_basket:
         item_in_basket = get_item_in_basket_data(item)
-        lable = f'"{item_in_basket.item_name}" - {item_in_basket.quantity} шт.'
-        amount = item_in_basket.quantity * item_in_basket.item_price * 100
-        price = LabeledPrice(label=lable, amount=amount)
-        prices.append(price)
-        total_price += amount
-        payload += f'{item_in_basket.item_id}:{item_in_basket.quantity}:'
-    payload += 'b'
-    total_price = total_price // 100
-    title = "Корзина"
-    photo_url = "https://i.pinimg.com/originals/08/be/fb/08befb0acad2f785207804a3b219f103.jpg"
-    return payload, title, description, prices, photo_url, total_price
-
-
-def check_on_length_payload(payload: str) -> bool:
-    if len(payload) <= 128:
-        return True
-    return False
+        ok, (item, new_quantity) = await check_item(call, item_in_basket.item_id, item_in_basket.quantity)
+        if ok and item and new_quantity:
+            alert_text += (f'Максимально возможное количество товара: "{item.item_name}", доступное к покупке '
+                           f'{new_quantity}. Количество товара в корзине изменено\n\n')
+            updated_item_in_basket_record = await db.change_quantity_item_in_basket(call.from_user.id,
+                                                                                    item_in_basket.item_id,
+                                                                                    new_quantity,
+                                                                                    datetime.datetime.utcnow())
+            updated_item_in_basket = get_item_in_basket_data(updated_item_in_basket_record)
+            updated_items_in_basket_list.append(updated_item_in_basket)
+        elif ok:
+            lable = f'"{item_in_basket.item_name}" - {item_in_basket.quantity} шт.'
+            amount = item_in_basket.quantity * item_in_basket.item_price * 100
+            price = LabeledPrice(label=lable, amount=amount)
+            prices.append(price)
+            total_price += amount
+            payload += f'{item_in_basket.item_id}:{item_in_basket.quantity}:'
+        else:
+            alert_text += (f'Товар <b>"{item_in_basket.item_name}"</b> с <b>ID {item_in_basket.item_id}</b> больше '
+                           f'недоступен. Товар удален из корзины\n')
+            await db.delete_item_from_basket(call.from_user.id, item_in_basket.item_id)
+            deleted_items_in_basket_list.append(item_in_basket)
+    if not updated_items_in_basket_list and not deleted_items_in_basket_list:
+        payload += 'b'
+        total_price = total_price // 100
+        title = "Корзина"
+        photo_url = "https://i.pinimg.com/originals/08/be/fb/08befb0acad2f785207804a3b219f103.jpg"
+        return True, (payload, title, description, prices, photo_url, total_price)
+    if updated_items_in_basket_list or deleted_items_in_basket_list:
+        text, basket_list_items = await prepare_markup_for_basket(call)
+        if not basket_list_items:
+            text = alert_text + '\nВ корзине больше не осталось товаров. Вы перемещены в начало каталога'
+        else:
+            text = alert_text + "\n" + text
+        await on_show_basket(call, text, basket_list_items)
+        return False, (None, None, None, None, None, None)
 
 
 def check_on_total_price(total_price: int) -> bool:
@@ -73,43 +136,42 @@ async def send_invoice(call: CallbackQuery, callback_data: dict):
     config = get_config(call)
     provider_token = config.misc.provider_token_sber
     if callback_data.get('item_id') == 'basket':
-        payload, title, description, prices, photo_url, total_price = await prepare_data_for_basket_invoice(call)
+        ok, (payload, title, description, prices, photo_url, total_price) = await prepare_data_for_basket_invoice(call)
     else:
-        payload, title, description, prices, photo_url, total_price = \
+        ok, (payload, title, description, prices, photo_url, total_price) = \
             await prepare_data_for_item_invoice(call, callback_data)
-    if check_on_length_payload(payload):
+    if ok:
         if check_on_total_price(total_price):
             await call.answer(cache_time=3)
-            await call.message.delete()
-            await call.bot.send_invoice(chat_id=call.message.chat.id,
-                                        provider_token=provider_token,
-                                        payload=payload,
-                                        title=title,
-                                        description=description[0:255],
-                                        currency='RUB',
-                                        prices=prices,
-                                        start_parameter='',
-                                        photo_url=photo_url,
-                                        photo_size=600,
-                                        need_shipping_address=True,
-                                        need_name=True,
-                                        need_email=True,
-                                        need_phone_number=True,
-                                        is_flexible=True,
-                                        send_email_to_provider=True,
-                                        send_phone_number_to_provider=True)
+            # await call.message.delete()
+            if await delete_message(call, logger, UserTexts.PHOTO_LOGO, reboot_text=UserTexts.USER_REBOOT_BOT):
+                await call.bot.send_invoice(chat_id=call.message.chat.id,
+                                            provider_token=provider_token,
+                                            payload=payload,
+                                            title=title,
+                                            description=description[0:255],
+                                            currency='RUB',
+                                            prices=prices,
+                                            start_parameter='',
+                                            photo_url=photo_url,
+                                            photo_size=600,
+                                            need_shipping_address=True,
+                                            need_name=True,
+                                            need_email=True,
+                                            need_phone_number=True,
+                                            is_flexible=True,
+                                            send_email_to_provider=True,
+                                            send_phone_number_to_provider=True)
         else:
             await call.answer(cache_time=3)
-            await call.message.delete()
-            await call.message.answer('Сумма вашей покупки должна быть не более 1000000 руб. Для того, чтобы '
-                                      'совершить покупки на большую сумму, вам необходимо разбить заказ на несколько '
-                                      'чтобы сумма каждого не превышала 1 млн руб. Пожалуйста, нажмите /menu и '
-                                      'перейдите в корзину, если вы совершали покупки через корзину, или просто '
-                                      'уменьшите количество покупаемого товара, чтобы сумма не привышала 1 млн руб.')
-    else:
-        await call.message.answer('В вашей корзине слишком много товаров. Максимальное количество '
-                                  'наименований товаров в корзине - 14. Пожалуйста, разбейте заказ на несколько ')
-        await show_basket(call)
+            # await call.message.delete()
+            if await delete_message(call, logger, UserTexts.PHOTO_LOGO, reboot_text=UserTexts.USER_REBOOT_BOT):
+                await call.message.answer('Сумма вашей покупки должна быть не более 1000000 руб. Для того, чтобы '
+                                          'совершить покупки на большую сумму, вам необходимо разбить заказ на '
+                                          'несколько чтобы сумма каждого не превышала 1 млн руб. Пожалуйста, нажмите '
+                                          '/menu и перейдите в корзину, если вы совершали покупки через корзину, '
+                                          'или просто уменьшите количество покупаемого товара, чтобы сумма не '
+                                          'привышала 1 млн руб.')
 
 
 async def choose_shipping(query: ShippingQuery):
@@ -149,7 +211,7 @@ async def prepare_data_for_pre_checkout_query(query: PreCheckoutQuery) -> typing
         else:
             text += f'\nК сожалению, товар с ID {item_id} больше не продается\n'
             ok = False
-    if total_amount_without_shipping != new_total_amount:
+    if ok and total_amount_without_shipping != new_total_amount:
         text += '\nК сожалению, цена одного из товаров со времени выставления счета изменилась либо каких-то товаров '\
                 'нет в наличии. Счет больше недействителен. Пожалуйста, пересоздайте заказ'
         ok = False
@@ -238,7 +300,7 @@ async def succesfull_payment(message: Message):
         try:
             remove_clear_basket_job(message, message.chat.id)
         except JobLookupError as err:
-            logger.info(err)
+            logger.exception(err)
     amount = message.successful_payment.total_amount // 100
     currency = message.successful_payment.currency
     shipping_prices_text, total_shipping_price = get_shipping_data(message.successful_payment.shipping_option_id)

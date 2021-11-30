@@ -17,9 +17,8 @@ from tgbot.keyboards.menu_keyboards.users_keyboards.menu_inline import categorie
     back_button_keyboard_for_more_photos, add_to_basket_cd, basket_cd, edit_basket_markup
 from tgbot.misc.schedule import clear_basket_on_schedule, remove_clear_basket_job
 from tgbot.misc.secondary_functions import get_db, get_user_data, get_item_data, Item, ItemInBasket, \
-    get_item_in_basket_data, User
+    get_item_in_basket_data, User, delete_message, load_basket_payload, check_payload, check_price_list
 from tgbot.misc.texts import UserTexts
-
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +76,7 @@ def check_on_start_args(encoded_args: typing.Optional[str]):
     if encoded_args:
         try:
             decoded_args_str = decode_payload(encoded_args)
-        except UnicodeDecodeError as err:
+        except UnicodeDecodeError:
             return
         except Exception as err:
             logger.exception('%s: %s', type(err), err)
@@ -160,8 +159,9 @@ async def list_categories(obj: typing.Union[Message, CallbackQuery]):
             await call.message.edit_caption(caption=text, reply_markup=markup)
         else:
             await call.answer(cache_time=1)
-            await call.message.delete()
-            await call.message.answer_photo(photo=UserTexts.PHOTO_LOGO, caption=text, reply_markup=markup)
+            # await call.message.delete()
+            if await delete_message(call, logger, UserTexts.PHOTO_LOGO, UserTexts.USER_REBOOT_BOT):
+                await call.message.answer_photo(photo=UserTexts.PHOTO_LOGO, caption=text, reply_markup=markup)
 
 
 async def list_subcategories(call: CallbackQuery, item_category_code: int):
@@ -177,8 +177,10 @@ async def list_items(call: CallbackQuery, item_category_code: int, item_subcateg
     if call.message.caption == UserTexts.USER_MENU:
         await call.message.edit_reply_markup(markup)
     else:
-        await call.message.delete()
-        await call.message.answer_photo(photo=UserTexts.PHOTO_LOGO, caption=UserTexts.USER_MENU, reply_markup=markup)
+        # await call.message.delete()
+        if await delete_message(call, logger, UserTexts.PHOTO_LOGO, UserTexts.USER_REBOOT_BOT):
+            await call.message.answer_photo(photo=UserTexts.PHOTO_LOGO, caption=UserTexts.USER_MENU,
+                                            reply_markup=markup)
 
 
 async def get_item(obj: typing.Union[Message, CallbackQuery, PreCheckoutQuery], item_id: int) -> \
@@ -201,9 +203,15 @@ def create_photo_media_group(photos: typing.List[str]) -> MediaGroup:
 
 async def show_item(call: CallbackQuery, item_id: int):
     item = await get_item(call, item_id)
-    markup = await item_keyboard(call, item, quantity=1)
-    await call.message.delete()
-    await call.message.answer_photo(photo=item.item_photos[0], caption=UserTexts.item_text(item), reply_markup=markup)
+    if item:
+        markup = await item_keyboard(call, item, quantity=1)
+        # await call.message.delete()
+        if await delete_message(call, logger, UserTexts.PHOTO_LOGO, UserTexts.USER_REBOOT_BOT):
+            await call.message.answer_photo(photo=item.item_photos[0], caption=UserTexts.item_text(item),
+                                            reply_markup=markup)
+    else:
+        await call.message.edit_caption(UserTexts.user_products_out_of_stock_while_change(item_id),
+                                        reply_markup=await categories_keyboard(call))
 
 
 async def navigate(call: CallbackQuery, callback_data: dict):
@@ -224,37 +232,49 @@ async def navigate(call: CallbackQuery, callback_data: dict):
             await show_item(call, item_id)
 
 
-async def get_data_for_edit_quantity(call: CallbackQuery, callback_data: dict) -> typing.Tuple[Item, int]:
+async def get_data_for_edit_quantity(call: CallbackQuery, callback_data: dict) -> typing.Tuple[Item, int, int]:
     item_id = int(callback_data.get('item_id'))
     quantity = int(callback_data.get('quantity'))
     item = await get_item(call, item_id)
-    return item, quantity
+    return item, quantity, item_id
 
 
 async def increase_quantity(call: CallbackQuery, callback_data: dict):
-    item, quantity = await get_data_for_edit_quantity(call, callback_data)
-    if quantity < item.item_total_quantity:
-        await call.answer(cache_time=1)
-        quantity += 1
-    try:
-        markup = await item_keyboard(call, item, quantity)
-        await call.message.edit_reply_markup(reply_markup=markup)
-    except MessageNotModified:
-        await call.answer(text=f'{quantity} - это максимальное количество данного товара на складе',
-                          show_alert=True)
+    item, quantity, item_id = await get_data_for_edit_quantity(call, callback_data)
+    if item:
+        if quantity < item.item_total_quantity:
+            await call.answer(cache_time=1)
+            quantity += 1
+        try:
+            markup = await item_keyboard(call, item, quantity)
+            await call.message.edit_reply_markup(reply_markup=markup)
+        except MessageNotModified:
+            await call.answer(text=f'{quantity} - это максимальное количество данного товара на складе',
+                              show_alert=True)
+    else:
+        if await delete_message(call, logger, UserTexts.PHOTO_LOGO, reboot_text=UserTexts.USER_REBOOT_BOT):
+            await call.message.answer_photo(UserTexts.PHOTO_LOGO,
+                                            UserTexts.user_products_out_of_stock_while_change(item_id),
+                                            reply_markup=await categories_keyboard(call))
 
 
 async def decrease_quantity(call: CallbackQuery, callback_data: dict):
-    item, quantity = await get_data_for_edit_quantity(call, callback_data)
-    if quantity > 1:
-        await call.answer(cache_time=1)
-        quantity -= 1
-    try:
-        markup = await item_keyboard(call, item, quantity)
-        await call.message.edit_reply_markup(reply_markup=markup)
-    except MessageNotModified:
-        await call.answer(text=f'{quantity} - это минимально возможное количество данного товара для покупки',
-                          show_alert=True)
+    item, quantity, item_id = await get_data_for_edit_quantity(call, callback_data)
+    if item:
+        if quantity > 1:
+            await call.answer(cache_time=1)
+            quantity -= 1
+        try:
+            markup = await item_keyboard(call, item, quantity)
+            await call.message.edit_reply_markup(reply_markup=markup)
+        except MessageNotModified:
+            await call.answer(text=f'{quantity} - это минимально возможное количество данного товара для покупки',
+                              show_alert=True)
+    else:
+        if await delete_message(call, logger, UserTexts.PHOTO_LOGO, reboot_text=UserTexts.USER_REBOOT_BOT):
+            await call.message.answer_photo(UserTexts.PHOTO_LOGO,
+                                            UserTexts.user_products_out_of_stock_while_change(item_id),
+                                            reply_markup=await categories_keyboard(call))
 
 
 def get_data_for_scroll_items(callback_data: dict) -> typing.Tuple[int, int, int]:
@@ -265,15 +285,19 @@ def get_data_for_scroll_items(callback_data: dict) -> typing.Tuple[int, int, int
 
 
 def determine_next_item_id(scroll_direction: str, current_item_id: int, list_items_ids: typing.List[int]):
-    current_item_id_index = list_items_ids.index(current_item_id)
-    if scroll_direction == 'right':
-        next_item_id_index = current_item_id_index + 1 if current_item_id_index != len(list_items_ids) - 1 else 0
-        next_item_id = list_items_ids[next_item_id_index]
-        return next_item_id
-    elif scroll_direction == 'left':
-        next_item_id_index = current_item_id_index - 1 if current_item_id_index != 0 else len(list_items_ids) - 1
-        next_item_id = list_items_ids[next_item_id_index]
-        return next_item_id
+    try:
+        current_item_id_index = list_items_ids.index(current_item_id)
+    except ValueError:
+        return list_items_ids[0]
+    else:
+        if scroll_direction == 'right':
+            next_item_id_index = current_item_id_index + 1 if current_item_id_index != len(list_items_ids) - 1 else 0
+            next_item_id = list_items_ids[next_item_id_index]
+            return next_item_id
+        elif scroll_direction == 'left':
+            next_item_id_index = current_item_id_index - 1 if current_item_id_index != 0 else len(list_items_ids) - 1
+            next_item_id = list_items_ids[next_item_id_index]
+            return next_item_id
 
 
 async def determine_next_item(call: CallbackQuery, item_id: int, item_category_code: int, item_subcategory_code,
@@ -281,23 +305,36 @@ async def determine_next_item(call: CallbackQuery, item_id: int, item_category_c
     db = get_db(call)
     items_records = await db.get_items_from_items(item_category_code, item_subcategory_code)
     list_items_ids = [item_record.get('item_id') for item_record in items_records]
-    if len(list_items_ids) == 1:
-        await call.answer(text='В этой категории только один товар. Листать некуда', show_alert=True)
-        return
+    if list_items_ids:
+        if len(list_items_ids) == 1 and list_items_ids[0] == item_id:
+            await call.answer(text='В этой категории только один товар. Листать некуда', show_alert=True)
+            return
+        elif len(list_items_ids) == 1:
+            await call.answer(cache_time=1)
+            item = get_item_data(items_records[0])
+            return item
+        else:
+            await call.answer(cache_time=1)
+            next_item_id = determine_next_item_id(scroll_direction=scroll_direction, current_item_id=item_id,
+                                                  list_items_ids=list_items_ids)
+            item = [get_item_data(item_record) for item_record in items_records if
+                    item_record.get('item_id') == next_item_id][0]
+            return item
     else:
-        await call.answer(cache_time=1)
-        next_item_id = determine_next_item_id(scroll_direction=scroll_direction, current_item_id=item_id,
-                                              list_items_ids=list_items_ids)
-        item = await get_item(call, next_item_id)
-        return item
+        if await delete_message(call, logger, UserTexts.PHOTO_LOGO, reboot_text=UserTexts.USER_REBOOT_BOT):
+            await call.message.answer_photo(UserTexts.PHOTO_LOGO,
+                                            UserTexts.user_products_out_of_stock_while_change(item_id),
+                                            reply_markup=await categories_keyboard(call))
+            return
 
 
 async def scroll_items(call: CallbackQuery, callback_data: dict, scroll_direction: str):
     item = await determine_next_item(call, *get_data_for_scroll_items(callback_data), scroll_direction=scroll_direction)
     if item:
         markup = await item_keyboard(call, item, quantity=1)
-        await call.message.delete()
-        await call.message.answer_photo(item.item_photos[0], caption=UserTexts.item_text(item), reply_markup=markup)
+        # await call.message.delete()
+        if await delete_message(call, logger, UserTexts.PHOTO_LOGO, UserTexts.USER_REBOOT_BOT):
+            await call.message.answer_photo(item.item_photos[0], caption=UserTexts.item_text(item), reply_markup=markup)
     else:
         return
 
@@ -324,44 +361,61 @@ async def prepare_ids_messages_to_delete(call: CallbackQuery, media_group: Media
 
 async def more_photos(call: CallbackQuery, callback_data: dict, state: FSMContext):
     item, item_id = await get_data_for_more_photos(call, callback_data)
-    markup = back_button_keyboard_for_more_photos(item_id)
-    if len(item.item_photos) > 1:
-        await call.answer(cache_time=1)
-        if len(item.item_photos) == 2:
-            await call.message.delete()
-            await call.message.answer_photo(photo=item.item_photos[1], reply_markup=markup)
+    if item:
+        markup = back_button_keyboard_for_more_photos(item_id)
+        if len(item.item_photos) > 1:
+            await call.answer(cache_time=1)
+            if len(item.item_photos) == 2:
+                # await call.message.delete()
+                if await delete_message(call, logger, UserTexts.PHOTO_LOGO, UserTexts.USER_REBOOT_BOT, state):
+                    await call.message.answer_photo(photo=item.item_photos[1], reply_markup=markup)
+            else:
+                if await delete_message(call, logger, UserTexts.PHOTO_LOGO, UserTexts.USER_REBOOT_BOT, state):
+                    media_group = create_photo_media_group(item.item_photos[1:])
+                    # await call.message.delete()
+                    ids_list_messages_to_delete = await prepare_ids_messages_to_delete(call, media_group)
+                    await state.update_data(messages_to_delete=ids_list_messages_to_delete)
+                    await call.message.answer('Чтобы продолжить, нажмите "Назад"', reply_markup=markup)
         else:
-            media_group = create_photo_media_group(item.item_photos[1:])
-            await call.message.delete()
-            ids_list_messages_to_delete = await prepare_ids_messages_to_delete(call, media_group)
-            await state.update_data(messages_to_delete=ids_list_messages_to_delete)
-            await call.message.answer('Чтобы продолжить, нажмите "Назад"', reply_markup=markup)
+            await call.answer('У этого товара только одно фото', show_alert=True)
     else:
-        await call.answer('У этого товара только одно фото', show_alert=True)
+        if await delete_message(call, logger, UserTexts.PHOTO_LOGO, reboot_text=UserTexts.USER_REBOOT_BOT):
+            await call.message.answer_photo(UserTexts.PHOTO_LOGO,
+                                            UserTexts.user_products_out_of_stock_while_change(item_id),
+                                            reply_markup=await categories_keyboard(call))
 
 
 async def back_to_main_photo(call: CallbackQuery, callback_data, state: FSMContext):
     item, item_id = await get_data_for_more_photos(call, callback_data)
-    markup = await item_keyboard(call, item, quantity=1)
-    data_from_state = await state.get_data()
-    ids_list_messages_to_delete = data_from_state.get('messages_to_delete')
-    await call.message.delete()
-    if ids_list_messages_to_delete:
-        for id_message_to_delete in ids_list_messages_to_delete:
-            try:
-                await call.bot.delete_message(call.message.chat.id, id_message_to_delete)
-            except Exception as err:
-                logger.exception('%s: %s', type(err), err)
-    await call.message.answer_photo(photo=item.item_photos[0], caption=UserTexts.item_text(item), reply_markup=markup)
-    await state.reset_data()
+    if item:
+        markup = await item_keyboard(call, item, quantity=1)
+        data_from_state = await state.get_data()
+        ids_list_messages_to_delete = data_from_state.get('messages_to_delete')
+        # await call.message.delete()
+        if await delete_message(call, logger, UserTexts.PHOTO_LOGO, UserTexts.USER_REBOOT_BOT, state):
+            if ids_list_messages_to_delete:
+                for id_message_to_delete in ids_list_messages_to_delete:
+                    try:
+                        await call.bot.delete_message(call.message.chat.id, id_message_to_delete)
+                    except Exception as err:
+                        logger.exception('%s: %s', type(err), err)
+            await call.message.answer_photo(photo=item.item_photos[0], caption=UserTexts.item_text(item),
+                                            reply_markup=markup)
+            await state.reset_data()
+    else:
+        if await delete_message(call, logger, UserTexts.PHOTO_LOGO, reboot_text=UserTexts.USER_REBOOT_BOT):
+            await call.message.answer_photo(UserTexts.PHOTO_LOGO,
+                                            UserTexts.user_products_out_of_stock_while_change(item_id),
+                                            reply_markup=await categories_keyboard(call))
 
 
-async def get_data_for_add_item_to_basket(call: CallbackQuery, callback_data: dict) -> typing.Tuple[Item, int, int]:
+async def get_data_for_add_item_to_basket(call: CallbackQuery, callback_data: dict) -> typing.Tuple[Item, int, int,
+                                                                                                    int]:
     telegram_id = int(callback_data.get('telegram_id'))
     item_id = int(callback_data.get('item_id'))
     quantity = int(callback_data.get('quantity'))
     item = await get_item(call, item_id)
-    return item, telegram_id, quantity
+    return item, telegram_id, quantity, item_id
 
 
 async def get_item_in_basket(obj: typing.Union[Message, CallbackQuery], telegram_id: int, item_id: int) -> \
@@ -376,35 +430,49 @@ async def get_item_in_basket(obj: typing.Union[Message, CallbackQuery], telegram
 
 async def action_if_not_excceeded_total_quantity(call: CallbackQuery, new_item_in_basket: ItemInBasket, quantity: int):
     await call.answer(cache_time=1)
-    await call.message.delete()
-    addind_to_basket_text = UserTexts.user_successful_adding_to_basket(new_item_in_basket, quantity)
-    await call.message.answer(addind_to_basket_text)
-    markup = await categories_keyboard(call)
-    await call.message.answer_photo(UserTexts.PHOTO_LOGO, UserTexts.USER_BACK_TO_CATALOG, reply_markup=markup)
-    clear_basket_on_schedule(call, added_at=new_item_in_basket.added_at)
+    # await call.message.delete()
+    if await delete_message(call, logger, UserTexts.PHOTO_LOGO, UserTexts.USER_REBOOT_BOT):
+        adding_to_basket_text = UserTexts.user_successful_adding_to_basket(new_item_in_basket, quantity)
+        await call.message.answer(adding_to_basket_text)
+        markup = await categories_keyboard(call)
+        await call.message.answer_photo(UserTexts.PHOTO_LOGO, UserTexts.USER_BACK_TO_CATALOG, reply_markup=markup)
+        clear_basket_on_schedule(call, added_at=new_item_in_basket.added_at)
 
 
 async def add_item_to_basket(call: CallbackQuery, callback_data: dict):
-    item, telegram_id, quantity = await get_data_for_add_item_to_basket(call, callback_data)
-    added_at = datetime.datetime.utcnow()
-    item_in_basket = await get_item_in_basket(call, telegram_id, item.item_id)
-    db = get_db(call)
-    if item_in_basket:
-        new_quantity = quantity + item_in_basket.quantity
-        if new_quantity <= item.item_total_quantity:
-            new_item_in_basket_record = await db.change_quantity_item_in_basket(telegram_id, item.item_id,
-                                                                                new_quantity, added_at)
-            new_item_in_basket = get_item_in_basket_data(new_item_in_basket_record)
-            await action_if_not_excceeded_total_quantity(call, new_item_in_basket, quantity)
+    item, telegram_id, quantity, item_id = await get_data_for_add_item_to_basket(call, callback_data)
+    if item:
+        db = get_db(call)
+        items_from_basket = await db.select_items_from_basket(call.from_user.id)
+        payload = await load_basket_payload(items_from_basket)
+        if check_payload(payload) and check_price_list(list(items_from_basket)):
+            added_at = datetime.datetime.utcnow()
+            item_in_basket = await get_item_in_basket(call, telegram_id, item.item_id)
+            if item_in_basket:
+                new_quantity = quantity + item_in_basket.quantity
+                if new_quantity <= item.item_total_quantity:
+                    new_item_in_basket_record = await db.change_quantity_item_in_basket(telegram_id, item.item_id,
+                                                                                        new_quantity, added_at)
+                    new_item_in_basket = get_item_in_basket_data(new_item_in_basket_record)
+                    await action_if_not_excceeded_total_quantity(call, new_item_in_basket, quantity)
+                else:
+                    await call.answer(UserTexts.user_unsuccessful_adding_to_basket(
+                        item_in_basket, quantity, item.item_total_quantity),
+                        show_alert=True)
+            else:
+                new_item_in_basket_record = await db.add_items_to_basket(telegram_id, item.item_id,
+                                                                         quantity, added_at)
+                new_item_in_basket = get_item_in_basket_data(new_item_in_basket_record)
+                await action_if_not_excceeded_total_quantity(call, new_item_in_basket, quantity)
         else:
-            await call.answer(UserTexts.user_unsuccessful_adding_to_basket(
-                item_in_basket, quantity, item.item_total_quantity),
-                show_alert=True)
+            await call.answer('Это максимальное количество товаров в корзине. Больше нельзя добавить товары. Вы '
+                              'можете оплатить текущую "корзину" и вернуться к покупкам',
+                              show_alert=True)
     else:
-        new_item_in_basket_record = await db.add_items_to_basket(telegram_id, item.item_id,
-                                                                 quantity, added_at)
-        new_item_in_basket = get_item_in_basket_data(new_item_in_basket_record)
-        await action_if_not_excceeded_total_quantity(call, new_item_in_basket, quantity)
+        if await delete_message(call, logger, UserTexts.PHOTO_LOGO, reboot_text=UserTexts.USER_REBOOT_BOT):
+            await call.message.answer_photo(UserTexts.PHOTO_LOGO,
+                                            UserTexts.user_products_out_of_stock_while_change(item_id),
+                                            reply_markup=await categories_keyboard(call))
 
 
 async def prepare_markup_for_basket(call: CallbackQuery):
@@ -430,19 +498,25 @@ async def prepare_markup_for_basket(call: CallbackQuery):
         return text, list()
 
 
-async def show_basket(call: CallbackQuery):
-    await call.answer(cache_time=1)
-    text, basket_list_items = await prepare_markup_for_basket(call)
+async def on_show_basket(call: CallbackQuery, text: str, basket_list_items):
     if basket_list_items:
         text += UserTexts.USER_BASKET_PAY_OR_CLEAR
         markup = edit_basket_markup(basket_list_items)
-        await call.message.delete()
-        await call.message.answer(text, reply_markup=markup)
+        # await call.message.delete()
+        if await delete_message(call, logger, UserTexts.PHOTO_LOGO, UserTexts.USER_REBOOT_BOT):
+            await call.message.answer(text, reply_markup=markup)
     else:
         text = text
         markup = await categories_keyboard(call)
-        await call.message.delete()
-        await call.message.answer_photo(UserTexts.PHOTO_LOGO, caption=text, reply_markup=markup)
+        # await call.message.delete()
+        if await delete_message(call, logger, UserTexts.PHOTO_LOGO, UserTexts.USER_REBOOT_BOT):
+            await call.message.answer_photo(UserTexts.PHOTO_LOGO, caption=text, reply_markup=markup)
+
+
+async def show_basket(call: CallbackQuery):
+    await call.answer(cache_time=1)
+    text, basket_list_items = await prepare_markup_for_basket(call)
+    await on_show_basket(call, text, basket_list_items)
 
 
 async def delete_item_from_basket(call: CallbackQuery, callback_data: dict):
@@ -457,15 +531,16 @@ async def delete_item_from_basket(call: CallbackQuery, callback_data: dict):
         await call.message.edit_text(text, reply_markup=markup)
     else:
         markup = await categories_keyboard(call)
-        await call.message.delete()
-        try:
-            remove_clear_basket_job(call)
-            text = UserTexts.user_basket_deleted_item(item_id) + ' ' + UserTexts.USER_BASKET_EMPTY
-            await call.message.answer_photo(UserTexts.PHOTO_LOGO, caption=text, reply_markup=markup)
-            # await call.message.edit_text(text, reply_markup=markup)
-        except JobLookupError:
-            text = UserTexts.USER_BASKET_CANCEL_AFTER_24_HOURS
-            await call.message.answer_photo(UserTexts.PHOTO_LOGO, caption=text, reply_markup=markup)
+        # await call.message.delete()
+        if await delete_message(call, logger, UserTexts.PHOTO_LOGO, UserTexts.USER_REBOOT_BOT):
+            try:
+                remove_clear_basket_job(call)
+                text = UserTexts.user_basket_deleted_item(item_id) + ' ' + UserTexts.USER_BASKET_EMPTY
+                await call.message.answer_photo(UserTexts.PHOTO_LOGO, caption=text, reply_markup=markup)
+                # await call.message.edit_text(text, reply_markup=markup)
+            except JobLookupError:
+                text = UserTexts.USER_BASKET_CANCEL_AFTER_24_HOURS
+                await call.message.answer_photo(UserTexts.PHOTO_LOGO, caption=text, reply_markup=markup)
 
 
 async def cancel_basket(call: CallbackQuery):
@@ -473,12 +548,13 @@ async def cancel_basket(call: CallbackQuery):
     db = get_db(call)
     markup = await categories_keyboard(call)
     goods = await db.select_items_from_basket(call.from_user.id)
-    await call.message.delete()
-    if goods:
-        text = UserTexts.USER_BASKET_CANCEL_WITH_GOODS
-    else:
-        text = UserTexts.USER_BASKET_CANCEL_WITHOUT_GOODS
-    await call.message.answer_photo(UserTexts.PHOTO_LOGO, caption=text, reply_markup=markup)
+    # await call.message.delete()
+    if await delete_message(call, logger, UserTexts.PHOTO_LOGO, UserTexts.USER_REBOOT_BOT):
+        if goods:
+            text = UserTexts.USER_BASKET_CANCEL_WITH_GOODS
+        else:
+            text = UserTexts.USER_BASKET_CANCEL_WITHOUT_GOODS
+        await call.message.answer_photo(UserTexts.PHOTO_LOGO, caption=text, reply_markup=markup)
 
 
 async def clear_basket(call: CallbackQuery):
@@ -486,14 +562,15 @@ async def clear_basket(call: CallbackQuery):
     db = get_db(call)
     await db.delete_all_items_from_basket(call.from_user.id)
     markup = await categories_keyboard(call)
-    await call.message.delete()
-    try:
-        remove_clear_basket_job(call)
-        await call.message.answer_photo(UserTexts.PHOTO_LOGO, caption=UserTexts.USER_BASKET_CANCEL_WITHOUT_GOODS,
-                                        reply_markup=markup)
-    except JobLookupError:
-        await call.message.answer_photo(UserTexts.PHOTO_LOGO, caption=UserTexts.USER_BASKET_CANCEL_AFTER_24_HOURS,
-                                        reply_markup=markup)
+    # await call.message.delete()
+    if await delete_message(call, logger, UserTexts.PHOTO_LOGO, UserTexts.USER_REBOOT_BOT):
+        try:
+            remove_clear_basket_job(call)
+            await call.message.answer_photo(UserTexts.PHOTO_LOGO, caption=UserTexts.USER_BASKET_CANCEL_WITHOUT_GOODS,
+                                            reply_markup=markup)
+        except JobLookupError:
+            await call.message.answer_photo(UserTexts.PHOTO_LOGO, caption=UserTexts.USER_BASKET_CANCEL_AFTER_24_HOURS,
+                                            reply_markup=markup)
 
 
 def register_user(dp: Dispatcher):

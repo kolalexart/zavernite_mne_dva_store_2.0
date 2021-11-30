@@ -5,6 +5,7 @@ from aiogram import Dispatcher, types
 from aiogram.dispatcher import FSMContext
 from aiogram.types import Message, ReplyKeyboardRemove, MediaGroup, \
     InputMediaPhoto, ContentType, CallbackQuery
+from asyncpg import ForeignKeyViolationError, Record
 
 from tgbot.handlers.admins.admins_secondary import admin_filters, get_data_from_state, \
     get_items_subcategories, get_chosen_category_code, check_on_without_subcategory, get_items_list, \
@@ -18,7 +19,7 @@ from tgbot.keyboards.menu_keyboards.admins_keybords.admins_menu import choose_it
     choose_item_subcategory_name_markup, choose_item_markup, admins_change_menu_markup, cancel_markup, change_item_cd, \
     ADMINS_CHANGE_ITEM_MENU, item_discontinued_status_markup, yes_no_reply_markup, item_short_description_markup
 from tgbot.middlewares.album import album_latency
-from tgbot.misc.secondary_functions import Item, get_db
+from tgbot.misc.secondary_functions import Item, get_db, delete_message_for_admins
 from tgbot.misc.states import ChangeItem
 from tgbot.services.integrations.telegraph.service import TelegraphService
 
@@ -134,173 +135,200 @@ async def change_choose_item_name(message: Message, state: FSMContext):
         await reject_content_type(message, additional_text, choose_item_markup(items_list))
 
 
+async def product_still_exists(target: typing.Union[CallbackQuery, Message], state: FSMContext,
+                               item: typing.Optional[typing.Union[Item, Record]], item_id: int):
+    message = target if isinstance(target, Message) else target.message
+    if item:
+        return True
+    if isinstance(target, Message):
+        await message.answer(f'Товар с "<b>ID {item_id}</b>" больше не существует', reply_markup=ReplyKeyboardRemove())
+    else:
+        await message.answer(f'Товар с "<b>ID {item_id}</b>" больше не существует')
+    await state.finish()
+    return
+
+
 async def changing_item_id(call: CallbackQuery, state: FSMContext, target: str, item_id: int):
     db = get_db(call)
     item = await get_item(call, item_id)
-    list_item_ids = [item_id_record.get('item_id') for item_id_record in await db.get_items_ids_from_items()]
-    item_ids_str = ', '.join(list(map(str, list_item_ids)))
-    text = f'Вы изменяете <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b> товара <b>{item.item_name}</b>.\n\n' \
-           f'Сейчас <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b>: {item.item_id}\n\n' \
-           f'Пожалуйста, введите целое число в интервале от 1 до 9999 отличное от уже ' \
-           f'использованных: {item_ids_str}. Либо отмените операцию'
-    await call.message.answer(text, reply_markup=cancel_markup())
-    await state.update_data(item_id=item_id,
-                            list_item_ids=list_item_ids,
-                            item_ids_str=item_ids_str)
-    await ChangeItem.item_id.set()
+    if await product_still_exists(call, state, item, item_id):
+        list_item_ids = [item_id_record.get('item_id') for item_id_record in await db.get_items_ids_from_items()]
+        item_ids_str = ', '.join(list(map(str, list_item_ids)))
+        text = f'Вы изменяете <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b> товара <b>{item.item_name}</b>.\n\n' \
+               f'Сейчас <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b>: {item.item_id}\n\n' \
+               f'Пожалуйста, введите целое число в интервале от 1 до 9999 отличное от уже ' \
+               f'использованных: {item_ids_str}. Либо отмените операцию'
+        await call.message.answer(text, reply_markup=cancel_markup())
+        await state.update_data(item_id=item_id,
+                                list_item_ids=list_item_ids,
+                                item_ids_str=item_ids_str)
+        await ChangeItem.item_id.set()
 
 
 async def changing_item_name(call: CallbackQuery, state: FSMContext, target: str, item_id: int):
     db = get_db(call)
     item = await get_item(call, item_id)
-    list_item_names = [item_name_record.get('item_name').lower() for item_name_record in
-                       await db.get_items_names_from_items()]
-    text = f'Вы изменяете <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b> товара <b>{item.item_name}</b>.\n\n' \
-           f'Сейчас <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b>: {item.item_name}\n\n' \
-           f'Пожалуйста, введите новое название товара, состоящее не более, чем из 30 символов и отличное от уже ' \
-           f'имеющихся. Либо отмените операцию'
-    await call.message.answer(text, reply_markup=cancel_markup())
-    await state.update_data(item_id=item_id,
-                            list_item_names=list_item_names,
-                            item_name=item.item_name)
-    await ChangeItem.item_name_set.set()
+    if await product_still_exists(call, state, item, item_id):
+        list_item_names = [item_name_record.get('item_name').lower() for item_name_record in
+                           await db.get_items_names_from_items()]
+        text = f'Вы изменяете <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b> товара <b>{item.item_name}</b>.\n\n' \
+               f'Сейчас <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b>: {item.item_name}\n\n' \
+               f'Пожалуйста, введите новое название товара, состоящее не более, чем из 30 символов и отличное от уже ' \
+               f'имеющихся. Либо отмените операцию'
+        await call.message.answer(text, reply_markup=cancel_markup())
+        await state.update_data(item_id=item_id,
+                                list_item_names=list_item_names,
+                                item_name=item.item_name)
+        await ChangeItem.item_name_set.set()
 
 
 async def changing_item_photos(call: CallbackQuery, state: FSMContext, target: str, item_id: int):
     item = await get_item(call, item_id)
-    text = f'Вы изменяете <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b> товара <b>{item.item_name}</b>.\n\n' \
-           f'Сейчас у товара загружено фотографий: {len(item.item_photos)} шт.\n\n' \
-           f'Пожалуйста, пришлите новые фотографии товара до 10 шт. Фотографии должны быть присланы ' \
-           f'картинкой или группой фотографий. Либо отмените операцию'
-    await call.message.answer(text, reply_markup=cancel_markup())
-    await state.update_data(item_id=item_id)
-    await ChangeItem.item_photos.set()
+    if await product_still_exists(call, state, item, item_id):
+        text = f'Вы изменяете <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b> товара <b>{item.item_name}</b>.\n\n' \
+               f'Сейчас у товара загружено фотографий: {len(item.item_photos)} шт.\n\n' \
+               f'Пожалуйста, пришлите новые фотографии товара до 10 шт. Фотографии должны быть присланы ' \
+               f'картинкой или группой фотографий. Либо отмените операцию'
+        await call.message.answer(text, reply_markup=cancel_markup())
+        await state.update_data(item_id=item_id)
+        await ChangeItem.item_photos.set()
 
 
 async def changing_item_main_photo(call: CallbackQuery, state: FSMContext, target: str, item_id: int):
     item = await get_item(call, item_id)
-    text = f'Вы изменяете <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b> товара <b>{item.item_name}</b>.\n\n' \
-           f'Сейчас у товара загружено фотографий: {len(item.item_photos)} шт.\n\n' \
-           f'Пожалуйста, пришлите одно новое фото товара, которое будет установлено в качестве основного. ' \
-           f'Либо отмените операцию'
-    await call.message.answer(text, reply_markup=cancel_markup())
-    await state.update_data(item_id=item_id)
-    await ChangeItem.item_main_photo.set()
+    if await product_still_exists(call, state, item, item_id):
+        text = f'Вы изменяете <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b> товара <b>{item.item_name}</b>.\n\n' \
+               f'Сейчас у товара загружено фотографий: {len(item.item_photos)} шт.\n\n' \
+               f'Пожалуйста, пришлите одно новое фото товара, которое будет установлено в качестве основного. ' \
+               f'Либо отмените операцию'
+        await call.message.answer(text, reply_markup=cancel_markup())
+        await state.update_data(item_id=item_id)
+        await ChangeItem.item_main_photo.set()
 
 
 async def changing_item_price(call: CallbackQuery, state: FSMContext, target: str, item_id: int):
     item = await get_item(call, item_id)
-    text = f'Вы изменяете <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b> товара <b>{item.item_name}</b>.\n\n' \
-           f'Сейчас <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b>: {item.item_price}\n\n' \
-           f'Пожалуйста, пришлите цену товара в рублях. Цена должна быть без копеек и находиться в интервале от ' \
-           f'10 до 1000000'
-    await call.message.answer(text, reply_markup=cancel_markup())
-    await state.update_data(item_id=item_id, item_price=item.item_price)
-    await ChangeItem.item_price.set()
+    if await product_still_exists(call, state, item, item_id):
+        text = f'Вы изменяете <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b> товара <b>{item.item_name}</b>.\n\n' \
+               f'Сейчас <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b>: {item.item_price}\n\n' \
+               f'Пожалуйста, пришлите цену товара в рублях. Цена должна быть без копеек и находиться в интервале от ' \
+               f'10 до 1000000'
+        await call.message.answer(text, reply_markup=cancel_markup())
+        await state.update_data(item_id=item_id, item_price=item.item_price)
+        await ChangeItem.item_price.set()
 
 
 async def changing_item_description(call: CallbackQuery, state: FSMContext, target: str, item_id: int):
     item = await get_item(call, item_id)
-    text = f'Вы изменяете <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b> товара <b>{item.item_name}</b>.\n\n' \
-           f'Сейчас <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b>:\n\n<i>{item.item_description}</i>\n\n' \
-           f'Пожалуйста, введите новое описание товара, состоящее не более, чем из 800 символов. ' \
-           f'Либо отмените операцию'
-    await call.message.answer(text, reply_markup=cancel_markup())
-    await state.update_data(item_id=item_id,
-                            item_description=item.item_description)
-    await ChangeItem.item_description.set()
+    if await product_still_exists(call, state, item, item_id):
+        text = f'Вы изменяете <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b> товара <b>{item.item_name}</b>.\n\n' \
+               f'Сейчас <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b>:\n\n<i>{item.item_description}</i>\n\n' \
+               f'Пожалуйста, введите новое описание товара, состоящее не более, чем из 800 символов. ' \
+               f'Либо отмените операцию'
+        await call.message.answer(text, reply_markup=cancel_markup())
+        await state.update_data(item_id=item_id,
+                                item_description=item.item_description)
+        await ChangeItem.item_description.set()
 
 
 async def changing_item_short_description(call: CallbackQuery, state: FSMContext, target: str, item_id: int):
     item = await get_item(call, item_id)
-    text = f'Вы изменяете <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b> товара <b>{item.item_name}</b>.\n\n' \
-           f'Сейчас <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b>:\n\n<i>{item.item_short_description}</i>\n\n' \
-           f'Пожалуйста, введите новое описание товара, состоящее не более, чем из 50 символов, нажмите ' \
-           f'"Не требуется" либо отмените операцию'
-    await call.message.answer(text, reply_markup=item_short_description_markup())
-    await state.update_data(item_id=item_id,
-                            item_short_description=item.item_short_description)
-    await ChangeItem.item_short_description.set()
+    if await product_still_exists(call, state, item, item_id):
+        text = f'Вы изменяете <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b> товара <b>{item.item_name}</b>.\n\n' \
+               f'Сейчас <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b>:\n\n<i>{item.item_short_description}</i>\n\n' \
+               f'Пожалуйста, введите новое описание товара, состоящее не более, чем из 50 символов, нажмите ' \
+               f'"Не требуется" либо отмените операцию'
+        await call.message.answer(text, reply_markup=item_short_description_markup())
+        await state.update_data(item_id=item_id,
+                                item_short_description=item.item_short_description)
+        await ChangeItem.item_short_description.set()
 
 
 async def changing_item_total_quantity(call: CallbackQuery, state: FSMContext, target: str, item_id: int):
     item = await get_item(call, item_id)
-    text = f'Вы изменяете <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b> товара <b>{item.item_name}</b>.\n\n' \
-           f'Сейчас <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b>: {item.item_total_quantity}\n\n' \
-           f'Пожалуйста, пришлите новое количество товара. Количество должно быть от ' \
-           f'0 до 9999'
-    await call.message.answer(text, reply_markup=cancel_markup())
-    await state.update_data(item_id=item_id, item_total_quantity=item.item_total_quantity)
-    await ChangeItem.item_total_quantity.set()
+    if await product_still_exists(call, state, item, item_id):
+        text = f'Вы изменяете <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b> товара <b>{item.item_name}</b>.\n\n' \
+               f'Сейчас <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b>: {item.item_total_quantity}\n\n' \
+               f'Пожалуйста, пришлите новое количество товара. Количество должно быть от ' \
+               f'0 до 9999'
+        await call.message.answer(text, reply_markup=cancel_markup())
+        await state.update_data(item_id=item_id, item_total_quantity=item.item_total_quantity)
+        await ChangeItem.item_total_quantity.set()
 
 
 async def changing_item_discontinued(call: CallbackQuery, state: FSMContext, target: str, item_id: int):
     item = await get_item(call, item_id)
-    text = f'Вы изменяете <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b> товара <b>{item.item_name}</b>.\n\n' \
-           f'Сейчас <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b>: {visibility(item.item_discontinued)}\n\n' \
-           f'Пожалуйста, введите новый статус видимости товара:'
-    await call.message.answer(text, reply_markup=item_discontinued_status_markup())
-    await state.update_data(item_id=item_id, item_discontinued=item.item_discontinued)
-    await ChangeItem.item_discontinued.set()
+    if await product_still_exists(call, state, item, item_id):
+        text = f'Вы изменяете <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b> товара <b>{item.item_name}</b>.\n\n' \
+               f'Сейчас <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b>: {visibility(item.item_discontinued)}\n\n' \
+               f'Пожалуйста, введите новый статус видимости товара:'
+        await call.message.answer(text, reply_markup=item_discontinued_status_markup())
+        await state.update_data(item_id=item_id, item_discontinued=item.item_discontinued)
+        await ChangeItem.item_discontinued.set()
 
 
 async def changing_item_photo_url(call: CallbackQuery, state: FSMContext, target: str, item_id: int):
     item = await get_item(call, item_id)
-    text = f'Вы изменяете <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b> товара <b>{item.item_name}</b>.\n\n' \
-           f'Сейчас ссылка на фото для быстрого просмотрта и выставления счетов: {item.item_photo_url}\n\n' \
-           f'Пожалуйста, пришлите одно новое фото товара, которое будет установлено для быстрого просмотра и ' \
-           f'выствления счетов. Либо пришлите ссылку на фотографию на вашем сайте в формате .jpg или .jpeg, ' \
-           f'начинающуюся на "http://" или "https://" и заканчивающуюся на ".jpeg" или ".jpg". Либо отмените операцию'
-    await call.message.answer(text, reply_markup=cancel_markup())
-    await state.update_data(item_id=item_id, item_photo_url=item.item_photo_url)
-    await ChangeItem.item_photo_url.set()
+    if await product_still_exists(call, state, item, item_id):
+        text = f'Вы изменяете <b>{ADMINS_CHANGE_ITEM_MENU[target]}</b> товара <b>{item.item_name}</b>.\n\n' \
+               f'Сейчас ссылка на фото для быстрого просмотрта и выставления счетов: {item.item_photo_url}\n\n' \
+               f'Пожалуйста, пришлите одно новое фото товара, которое будет установлено для быстрого просмотра и ' \
+               f'выствления счетов. Либо пришлите ссылку на фотографию на вашем сайте в формате .jpg или .jpeg, ' \
+               f'начинающуюся на "http://" или "https://" и заканчивающуюся на ".jpeg" или ".jpg". Либо отмените ' \
+               f'операцию'
+        await call.message.answer(text, reply_markup=cancel_markup())
+        await state.update_data(item_id=item_id, item_photo_url=item.item_photo_url)
+        await ChangeItem.item_photo_url.set()
 
 
 async def deleting_item(call: CallbackQuery, state: FSMContext, item_id: int):
     item = await get_item(call, item_id)
-    text = f'Вы собираетесь удалить товар <b>{item.item_name}</b> с ID {item.item_id}\n\n' \
-           f'Вы уверены, что хотите его безвозвратно удалить?'
-    await call.message.answer(text, reply_markup=yes_no_reply_markup())
-    await state.update_data(item_id=item_id, item_name=item.item_name)
-    await ChangeItem.item_delete.set()
+    if await product_still_exists(call, state, item, item_id):
+        text = f'Вы собираетесь удалить товар <b>{item.item_name}</b> с ID {item.item_id}\n\n' \
+               f'Вы уверены, что хотите его безвозвратно удалить?'
+        await call.message.answer(text, reply_markup=yes_no_reply_markup())
+        await state.update_data(item_id=item_id, item_name=item.item_name)
+        await ChangeItem.item_delete.set()
 
 
 async def cancel_changing_item(call: CallbackQuery, state: FSMContext, item_id: int):
     item = await get_item(call, item_id)
-    text = f'🟢 Вы успешно отменили изменение <b>{item.item_name}</b> с ID {item.item_id}\n\n'
-    await state.finish()
-    await call.message.answer(text)
+    if await product_still_exists(call, state, item, item_id):
+        text = f'🟢 Вы успешно отменили изменение <b>{item.item_name}</b> с ID {item.item_id}\n\n'
+        await state.finish()
+        await call.message.answer(text)
 
 
 async def start_changing_item_with_item_id(call: CallbackQuery, callback_data: dict, state: FSMContext):
     await call.answer(cache_time=1)
-    await call.message.delete()
-    target = callback_data.get('target')
-    item_id = int(callback_data.get('item_id'))
-    if target == 'ID':
-        await changing_item_id(call, state, target, item_id)
-    elif target == 'item_name':
-        await changing_item_name(call, state, target, item_id)
-    elif target == 'item_photos':
-        await changing_item_photos(call, state, target, item_id)
-    elif target == 'item_main_photo':
-        await changing_item_main_photo(call, state, target, item_id)
-    elif target == 'item_price':
-        await changing_item_price(call, state, target, item_id)
-    elif target == 'item_description':
-        await changing_item_description(call, state, target, item_id)
-    elif target == 'item_short_description':
-        await changing_item_short_description(call, state, target, item_id)
-    elif target == 'item_total_quantity':
-        await changing_item_total_quantity(call, state, target, item_id)
-    elif target == 'item_discontinued':
-        await changing_item_discontinued(call, state, target, item_id)
-    elif target == 'item_photo_url':
-        await changing_item_photo_url(call, state, target, item_id)
-    elif target == 'item_delete':
-        await deleting_item(call, state, item_id)
-    elif target == 'cancel':
-        await cancel_changing_item(call, state, item_id)
+    if await delete_message_for_admins(call, logger, state):
+        # await call.message.delete()
+        target = callback_data.get('target')
+        item_id = int(callback_data.get('item_id'))
+        if target == 'ID':
+            await changing_item_id(call, state, target, item_id)
+        elif target == 'item_name':
+            await changing_item_name(call, state, target, item_id)
+        elif target == 'item_photos':
+            await changing_item_photos(call, state, target, item_id)
+        elif target == 'item_main_photo':
+            await changing_item_main_photo(call, state, target, item_id)
+        elif target == 'item_price':
+            await changing_item_price(call, state, target, item_id)
+        elif target == 'item_description':
+            await changing_item_description(call, state, target, item_id)
+        elif target == 'item_short_description':
+            await changing_item_short_description(call, state, target, item_id)
+        elif target == 'item_total_quantity':
+            await changing_item_total_quantity(call, state, target, item_id)
+        elif target == 'item_discontinued':
+            await changing_item_discontinued(call, state, target, item_id)
+        elif target == 'item_photo_url':
+            await changing_item_photo_url(call, state, target, item_id)
+        elif target == 'item_delete':
+            await deleting_item(call, state, item_id)
+        elif target == 'cancel':
+            await cancel_changing_item(call, state, item_id)
 
 
 async def change_item_id(message: Message, state: FSMContext):
@@ -309,10 +337,11 @@ async def change_item_id(message: Message, state: FSMContext):
     if is_requerid_format_item_id(message, list_items_ids):
         item_id_new = int(message.text)
         db = get_db(message)
-        await db.update_item_from_items(item_id, 'item_id', item_id_new)
-        await state.finish()
-        await message.answer(f'🟢 ID успешно изменен с <b>{item_id}</b> на '
-                             f'<b>{item_id_new}</b>', reply_markup=ReplyKeyboardRemove())
+        updated_item = await db.update_item_from_items(item_id, 'item_id', item_id_new)
+        if await product_still_exists(message, state, updated_item, item_id):
+            await state.finish()
+            await message.answer(f'🟢 ID успешно изменен с <b>{item_id}</b> на '
+                                 f'<b>{item_id_new}</b>', reply_markup=ReplyKeyboardRemove())
     else:
         text = f'🔴 Пожалуйста, введите целое число в интервале от 1 до 9999 отличное от уже '\
                f'использованных: {items_ids_str}. Либо отмените операцию'
@@ -324,11 +353,12 @@ async def change_item_name(message: Message, state: FSMContext):
     if is_requerid_format_item_name(message, list_item_names):
         item_name_new = message.text.capitalize()
         db = get_db(message)
-        await db.update_item_from_items(item_id, 'item_name', item_name_new)
-        await state.finish()
-        await message.answer(f'🟢 Название товара успешно изменено c <b>{item_name}</b> на '
-                             f'<b>{item_name_new}</b>',
-                             reply_markup=ReplyKeyboardRemove())
+        updated_item = await db.update_item_from_items(item_id, 'item_name', item_name_new)
+        if await product_still_exists(message, state, updated_item, item_id):
+            await state.finish()
+            await message.answer(f'🟢 Название товара успешно изменено c <b>{item_name}</b> на '
+                                 f'<b>{item_name_new}</b>',
+                                 reply_markup=ReplyKeyboardRemove())
     else:
         text = f'🔴 Пожалуйста, введите новое название товара, состоящее не более, чем из 30 символов и ' \
                f'отличное от уже имеющихся. Либо отмените операцию'
@@ -341,9 +371,10 @@ async def change_item_photos(message: Message, state: FSMContext, album: typing.
     if is_requerid_format_media_group(album):
         item_photos_new = [message.photo[-1].file_id for message in album]
         db = get_db(message)
-        await db.update_item_from_items(item_id, 'item_photos', item_photos_new)
-        await state.finish()
-        await message.answer(f'🟢 Фотографии успешно изменены', reply_markup=ReplyKeyboardRemove())
+        updated_item = await db.update_item_from_items(item_id, 'item_photos', item_photos_new)
+        if await product_still_exists(message, state, updated_item, item_id):
+            await state.finish()
+            await message.answer(f'🟢 Фотографии успешно изменены', reply_markup=ReplyKeyboardRemove())
     else:
         text = f'🔴 Пожалуйста, пришлите новые фотографии товара до 10 шт. Другие форматы не принимаются. Фотографии ' \
                f'должны быть присланы картинкой или группой фотографий. Либо отмените операцию'
@@ -355,9 +386,10 @@ async def change_item_photo(message: Message, state: FSMContext):
     if is_requerid_format_item_photo(message):
         item_photos_new = [message.photo[-1].file_id]
         db = get_db(message)
-        await db.update_item_from_items(item_id, 'item_photos', item_photos_new)
-        await state.finish()
-        await message.answer(f'🟢 Фотография успешно изменена', reply_markup=ReplyKeyboardRemove())
+        updated_item = await db.update_item_from_items(item_id, 'item_photos', item_photos_new)
+        if await product_still_exists(message, state, updated_item, item_id):
+            await state.finish()
+            await message.answer(f'🟢 Фотография успешно изменена', reply_markup=ReplyKeyboardRemove())
     else:
         text = f'🔴 Пожалуйста, пришлите новые фотографии товара до 10 шт. Другие форматы не принимаются. Фотографии ' \
                f'должны быть присланы картинкой или группой фотографий. Либо отмените операцию'
@@ -376,9 +408,10 @@ async def change_item_main_photo(message: Message, state: FSMContext):
     if is_requerid_format_item_photo(message):
         item_main_photo_new = message.photo[-1].file_id
         db = get_db(message)
-        await db.update_item_first_photo_from_items(item_id, item_main_photo_new)
-        await state.finish()
-        await message.answer(f'🟢 Главное фото успешно изменено', reply_markup=ReplyKeyboardRemove())
+        updated_item = await db.update_item_first_photo_from_items(item_id, item_main_photo_new)
+        if await product_still_exists(message, state, updated_item, item_id):
+            await state.finish()
+            await message.answer(f'🟢 Главное фото успешно изменено', reply_markup=ReplyKeyboardRemove())
     else:
         text = f'🔴 Пожалуйста, пришлите одно новое фото товара, которое будет установлено в качестве основного. '\
                f'Либо отмените операцию'
@@ -390,10 +423,11 @@ async def change_item_price(message: Message, state: FSMContext):
     if is_requerid_format_item_price(message):
         item_price_new = int(message.text)
         db = get_db(message)
-        await db.update_item_from_items(item_id, 'item_price', item_price_new)
-        await state.finish()
-        await message.answer(f'🟢 Цена товара успешно изменена с <b>{item_price}</b> на '
-                             f'<b>{item_price_new}</b>', reply_markup=ReplyKeyboardRemove())
+        updated_item = await db.update_item_from_items(item_id, 'item_price', item_price_new)
+        if await product_still_exists(message, state, updated_item, item_id):
+            await state.finish()
+            await message.answer(f'🟢 Цена товара успешно изменена с <b>{item_price}</b> на '
+                                 f'<b>{item_price_new}</b>', reply_markup=ReplyKeyboardRemove())
     else:
         text = f'🔴 Пожалуйста, введите целое число от 10 до 1000000'
         await message.answer(text, reply_markup=cancel_markup())
@@ -404,10 +438,11 @@ async def change_item_description(message: Message, state: FSMContext):
     if is_requerid_format_item_description(message):
         item_description_new = message.text
         db = get_db(message)
-        await db.update_item_from_items(item_id, 'item_description', item_description_new)
-        await state.finish()
-        await message.answer(f'🟢 Описание товара успешно изменено с\n\n<i>{item_description}</i>\n\nна\n\n'
-                             f'<i>{item_description_new}</i>', reply_markup=ReplyKeyboardRemove())
+        updated_item = await db.update_item_from_items(item_id, 'item_description', item_description_new)
+        if await product_still_exists(message, state, updated_item, item_id):
+            await state.finish()
+            await message.answer(f'🟢 Описание товара успешно изменено с\n\n<i>{item_description}</i>\n\nна\n\n'
+                                 f'<i>{item_description_new}</i>', reply_markup=ReplyKeyboardRemove())
     else:
         text = f'🔴 Пожалуйста, введите новое описание товара, состоящее не более, чем из 800 символов. '\
                f'Либо отмените операцию'
@@ -419,10 +454,11 @@ async def change_item_short_description(message: Message, state: FSMContext):
     if is_requerid_format_item_short_description(message):
         item_short_description_new = message.text if message.text.lower() != 'не требуется' else None
         db = get_db(message)
-        await db.update_item_from_items(item_id, 'item_short_description', item_short_description_new)
-        await state.finish()
-        await message.answer(f'🟢 Описание товара успешно изменено с\n\n<i>{item_short_description}</i>\n\nна\n\n'
-                             f'<i>{item_short_description_new}</i>', reply_markup=ReplyKeyboardRemove())
+        updated_item = await db.update_item_from_items(item_id, 'item_short_description', item_short_description_new)
+        if await product_still_exists(message, state, updated_item, item_id):
+            await state.finish()
+            await message.answer(f'🟢 Описание товара успешно изменено с\n\n<i>{item_short_description}</i>\n\nна\n\n'
+                                 f'<i>{item_short_description_new}</i>', reply_markup=ReplyKeyboardRemove())
     else:
         text = f'🔴 Пожалуйста, введите новое короткое описание товара, состоящее не более, чем из 50 символов, ' \
                f'нажмите "Не требуется" либо отмените операцию'
@@ -434,10 +470,11 @@ async def change_item_total_quantity(message: Message, state: FSMContext):
     if is_requerid_format_item_total_quantity(message):
         item_total_quantity_new = int(message.text)
         db = get_db(message)
-        await db.update_item_from_items(item_id, 'item_total_quantity', item_total_quantity_new)
-        await state.finish()
-        await message.answer(f'🟢 Количество товара успешно изменено с <b>{item_total_quantity}</b> на '
-                             f'<b>{item_total_quantity_new}</b>', reply_markup=ReplyKeyboardRemove())
+        updated_item = await db.update_item_from_items(item_id, 'item_total_quantity', item_total_quantity_new)
+        if await product_still_exists(message, state, updated_item, item_id):
+            await state.finish()
+            await message.answer(f'🟢 Количество товара успешно изменено с <b>{item_total_quantity}</b> на '
+                                 f'<b>{item_total_quantity_new}</b>', reply_markup=ReplyKeyboardRemove())
     else:
         text = f'🔴 Пожалуйста, пришлите новое количество товара. Количество должно быть от '\
                f'0 до 9999'
@@ -449,10 +486,11 @@ async def change_item_discontinued(message: Message, state: FSMContext):
     if is_requerid_format_item_discontinued(message):
         item_discontinued_new = True if message.text.lower() == 'не видимый' else False
         db = get_db(message)
-        await db.update_item_from_items(item_id, 'item_discontinued', item_discontinued_new)
-        await state.finish()
-        await message.answer(f'🟢 Статус видимости товара изменен с <b>{visibility(item_discontinued)}</b> на '
-                             f'<b>{visibility(item_discontinued_new)}</b>', reply_markup=ReplyKeyboardRemove())
+        updated_item = await db.update_item_from_items(item_id, 'item_discontinued', item_discontinued_new)
+        if await product_still_exists(message, state, updated_item, item_id):
+            await state.finish()
+            await message.answer(f'🟢 Статус видимости товара изменен с <b>{visibility(item_discontinued)}</b> на '
+                                 f'<b>{visibility(item_discontinued_new)}</b>', reply_markup=ReplyKeyboardRemove())
     else:
         text = '🔴 Пожалуйста, введите новый статус видимости товара. Статус должен быть "Видимый" либо "Не видимый"'
         await message.answer(text, reply_markup=item_discontinued_status_markup())
@@ -479,18 +517,21 @@ async def change_item_photo_url(message: Message, state: FSMContext, file_upload
         if uploaded_photo:
             item_photo_url_new = uploaded_photo.link
             db = get_db(message)
-            await db.update_item_from_items(item_id, 'item_photo_url', item_photo_url_new)
-            await state.finish()
-            await message.answer(f'🟢 Новое фото успешно загружено. Новая ссылка сгенерирована. Ссылка на фото '
-                                 f'для быстрого просмотра и выставления счетов изменена с:\n\n'
-                                 f'{item_photo_url}\n\nна:\n\n{item_photo_url_new}', reply_markup=ReplyKeyboardRemove())
+            updated_item = await db.update_item_from_items(item_id, 'item_photo_url', item_photo_url_new)
+            if await product_still_exists(message, state, updated_item, item_id):
+                await state.finish()
+                await message.answer(f'🟢 Новое фото успешно загружено. Новая ссылка сгенерирована. Ссылка на фото '
+                                     f'для быстрого просмотра и выставления счетов изменена с:\n\n'
+                                     f'{item_photo_url}\n\nна:\n\n{item_photo_url_new}',
+                                     reply_markup=ReplyKeyboardRemove())
     elif is_requerid_format_item_photo_url(message):
         item_photo_url_new = message.text
         db = get_db(message)
-        await db.update_item_from_items(item_id, 'item_photo_url', item_photo_url_new)
-        await state.finish()
-        await message.answer(f'🟢 Ссылка на фото для быстрого просмотра и выставления счетов изменена с:\n\n'
-                             f'{item_photo_url}\n\nна:\n\n{item_photo_url_new}', reply_markup=ReplyKeyboardRemove())
+        updated_item = await db.update_item_from_items(item_id, 'item_photo_url', item_photo_url_new)
+        if await product_still_exists(message, state, updated_item, item_id):
+            await state.finish()
+            await message.answer(f'🟢 Ссылка на фото для быстрого просмотра и выставления счетов изменена с:\n\n'
+                                 f'{item_photo_url}\n\nна:\n\n{item_photo_url_new}', reply_markup=ReplyKeyboardRemove())
     else:
         await message.answer('🔴 Пожалуйста, пришлите одно новое фото товара, которое будет установлено для '
                              'быстрого просмотра и выствления счетов. Либо пришлите ссылку на фотографию '
@@ -505,10 +546,20 @@ async def delete_item(message: Message, state: FSMContext):
         confirmation = True if message.text.lower() == 'да' else False
         if confirmation:
             db = get_db(message)
-            await db.del_item_from_items(item_id)
-            await state.finish()
-            await message.answer(f'🟢 Товар <b>{item_name}</b> с ID <b>{item_id}</b> успешно удален',
-                                 reply_markup=ReplyKeyboardRemove())
+            try:
+                await db.del_item_from_items(item_id)
+            except ForeignKeyViolationError:
+                await state.finish()
+                await message.answer('🔴 Данный товар нельзя удалить по причине того, что он находится у кого-то в '
+                                     'корзине. Вы можете отключить видимость товара либо поставить его количество '
+                                     'равное 0, чтобы его нельзя было купить. В течение 24 часов товар автоматически '
+                                     'удалится из корзины и его можно будет удалить',
+                                     reply_markup=ReplyKeyboardRemove())
+                await state.finish()
+            else:
+                await state.finish()
+                await message.answer(f'🟢 Товар <b>{item_name}</b> с ID <b>{item_id}</b> успешно удален',
+                                     reply_markup=ReplyKeyboardRemove())
         else:
             await state.finish()
             await message.answer(f'🟢 Вы отменили удаление товара <b>{item_name}</b> с ID <b>{item_id}</b>',

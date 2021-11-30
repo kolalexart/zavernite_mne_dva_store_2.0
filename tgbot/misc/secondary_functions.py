@@ -1,15 +1,23 @@
 import datetime
 import re
+import sys
+import typing
 from dataclasses import dataclass
+from logging import Logger
 from typing import Union, Optional
 
-from aiogram import Dispatcher
-from aiogram.types import Message, CallbackQuery, InlineQuery, PreCheckoutQuery
+from aiogram import Dispatcher, Bot
+from aiogram.dispatcher import FSMContext
+from aiogram.types import Message, CallbackQuery, InlineQuery, PreCheckoutQuery, Chat
+from aiogram.utils.exceptions import MessageCantBeDeleted, MessageToDeleteNotFound
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from asyncpg import Record
 
 from tgbot.config import Config
 from tgbot.db_api.postgres_db import Database
+from tgbot.keyboards.inline import main_menu_keyboard
+from tgbot.keyboards.menu_keyboards.admins_keybords.admins_menu import admins_menu_markup
+from tgbot.misc.states import AdminActions
 
 
 def get_db(obj: Union[Message, CallbackQuery, Dispatcher, InlineQuery, PreCheckoutQuery]) -> Database:
@@ -128,3 +136,84 @@ def get_item_in_basket_data(item_in_basket: Record) -> ItemInBasket:
     item_price = item_in_basket_data.get('item_price')
     added_at = item_in_basket_data.get('added_at')
     return ItemInBasket(full_name, item_id, item_name, quantity, item_price, added_at)
+
+
+async def delete_message(target: typing.Union[Message, CallbackQuery], logger: Logger, reboot_photo: str,
+                         reboot_text: str, state: Optional[FSMContext] = None):
+    message = target if isinstance(target, Message) else target.message
+    try:
+        await message.delete()
+    except (MessageCantBeDeleted, MessageToDeleteNotFound):
+        await action_if_except(reboot_photo, reboot_text, state)
+        return False
+    except Exception as err:
+        logger.exception('Message can\'t be deleted\n%s: %s', type(err), err)
+        await action_if_except(reboot_photo, reboot_text, state)
+        return False
+    else:
+        return True
+
+
+async def bot_reboot(reboot_photo: str, reboot_text: str):
+    markup = main_menu_keyboard()
+    bot = Bot.get_current()
+    chat = Chat.get_current()
+    await bot.send_photo(chat_id=chat.id, photo=reboot_photo, caption=reboot_text,
+                         reply_markup=markup)
+
+
+async def action_if_except(reboot_photo: str, reboot_text: str, state: Optional[FSMContext] = None):
+    if state:
+        await state.finish()
+    await bot_reboot(reboot_photo, reboot_text)
+
+
+async def delete_message_for_admins(target: typing.Union[Message, CallbackQuery], logger: Logger,
+                                    state: FSMContext):
+    message = target if isinstance(target, Message) else target.message
+    try:
+        await message.delete()
+    except (MessageCantBeDeleted, MessageToDeleteNotFound):
+        await reboot_admins_menu(state)
+        return False
+    except Exception as err:
+        logger.exception('Message can\'t be deleted\n%s: %s', type(err), err)
+        await reboot_admins_menu(state)
+        return False
+    else:
+        return True
+
+
+async def reboot_admins_menu(state: FSMContext):
+    await state.finish()
+    markup = admins_menu_markup()
+    text = 'Информация устарела. Администраторское меню перезапущено'
+    bot = Bot.get_current()
+    chat = Chat.get_current()
+    await bot.send_message(chat_id=chat.id, text=text, reply_markup=markup)
+    await AdminActions.add_or_change.set()
+
+
+async def load_basket_payload(items_from_basket) -> typing.Optional[str]:
+    if items_from_basket:
+        payload = str()
+        for item_from_basket in items_from_basket:
+            item_in_basket: ItemInBasket = get_item_in_basket_data(item_from_basket)
+            payload += f'{item_in_basket.item_id}:{item_in_basket.quantity}:'
+        payload += 'b'
+        return payload
+    return
+
+
+def check_payload(payload: typing.Optional[str]) -> bool:
+    if not payload:
+        return True
+
+    else:
+        return True if sys.getsizeof(payload) <= 118 else False
+
+
+def check_price_list(items_from_basket: typing.Optional[list]) -> bool:
+    if not items_from_basket:
+        return True
+    return True if len(items_from_basket) <= 9 else False

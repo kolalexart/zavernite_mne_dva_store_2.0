@@ -230,8 +230,8 @@ class Database:
         return await self.execute(sql, fetch=True)
 
     async def update_item_from_items(self, item_id, parameter, value):
-        sql = f"""UPDATE items SET {parameter}=$1 WHERE item_id=$2"""
-        await self.execute(sql, value, item_id, execute=True)
+        sql = f"""UPDATE items SET {parameter}=$1 WHERE item_id=$2 RETURNING *"""
+        return await self.execute(sql, value, item_id, fetchrow=True)
 
     async def update_item_first_photo_from_items(self, item_id, value):
         sql = 'UPDATE items SET item_photos[1] = $1 WHERE item_id=$2'

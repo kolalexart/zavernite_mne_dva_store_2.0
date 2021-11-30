@@ -4,6 +4,7 @@ import typing
 from aiogram import Dispatcher, types
 from aiogram.dispatcher import FSMContext
 from aiogram.types import Message, ReplyKeyboardRemove, ContentType
+from asyncpg import UniqueViolationError
 
 from tgbot.handlers.admins.admins_secondary import reject_content_type, get_items_categories, \
     get_items_subcategories, get_data_from_state, admin_filters, get_chosen_category_code, \
@@ -14,10 +15,10 @@ from tgbot.handlers.admins.admins_secondary import reject_content_type, get_item
     on_process_upload_photo
 from tgbot.keyboards.menu_keyboards.admins_keybords.admins_menu import choose_item_id_markup, \
     choose_item_category_name_markup, choose_item_subcategory_name_markup, \
-    cancel_markup, yes_no_reply_markup, item_short_description_markup
+    cancel_markup, yes_no_reply_markup, item_short_description_markup, admins_menu_markup
 from tgbot.middlewares.album import album_latency
 from tgbot.misc.secondary_functions import get_db, get_item_data, ItemPatterns
-from tgbot.misc.states import AddItem
+from tgbot.misc.states import AddItem, AdminActions
 from tgbot.services.integrations.telegraph.service import TelegraphService
 
 logger = logging.getLogger(__name__)
@@ -493,11 +494,35 @@ async def load_to_database_from_state(message: Message, state: FSMContext):
                         'item_short_description', 'item_total_quantity', 'item_discontinued', 'item_photo_url']
     state_data = await get_data_from_state(state, *state_data_names)
     db = get_db(message)
-    item_record = await db.load_item_to_items(*state_data)
-    item = get_item_data(item_record)
-    await state.finish()
-    text = '🟢 Следующий товар успешно добавлен в базу данных:\n\n' + full_gproduct_description(item)
-    await message.answer(text, reply_markup=ReplyKeyboardRemove())
+    try:
+        item_record = await db.load_item_to_items(*state_data)
+    except UniqueViolationError as err:
+        key, value = parse_unique_violation_error(err.as_dict().get("detail"))
+        text = '🔴' + ' ' + text_for_unique_violation_error(key, value)
+        await message.answer(text, reply_markup=admins_menu_markup())
+        await state.finish()
+        await AdminActions.add_or_change.set()
+    else:
+        item = get_item_data(item_record)
+        await state.finish()
+        text = '🟢 Следующий товар успешно добавлен в базу данных:\n\n' + full_gproduct_description(item)
+        await message.answer(text, reply_markup=ReplyKeyboardRemove())
+
+
+def parse_unique_violation_error(detail: str) -> typing.Tuple[str, str]:
+    key, value = [_.strip('()') for _ in detail.split(' ')[1].strip('"').split('=')]
+    return key, value
+
+
+def text_for_unique_violation_error(key: str, value: str):
+    if key == 'item_id':
+        item_id = int(value)
+        text = f'Товар с <b>"ID {item_id}"</b> уже существует. Создайте новый товар с уникальным значением <b>"ID"</b>'
+        return text
+    elif key == 'item_name':
+        item_name = value
+        text = f'Товар с <b>Названием: "{item_name}"</b> уже существует. Создайте новый товар с уникальным названием'
+        return text
 
 
 def register_admin_add_item(dp: Dispatcher):

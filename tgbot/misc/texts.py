@@ -60,6 +60,8 @@ class UserTexts:
     USER_BASKET_CANCEL_AFTER_24_HOURS = 'Прошло больше 24 часов и ваша корзина уже очищена.\n'\
                                         'Вы перемещены в начало каталога. Можете продолжить покупки'
 
+    USER_REBOOT_BOT = 'Информация в боте устарела. Бот перезапущен. Вы, в главном меню:\n'
+
     @staticmethod
     def user_hello_old_user(user: User) -> str:
         text = f'Привет, {user.full_name}!\n\n' \
@@ -120,8 +122,13 @@ class UserTexts:
         return text
 
     @staticmethod
-    def user_basket_deleted_item(item_id: int):
+    def user_basket_deleted_item(item_id: int) -> str:
         text = f'Позиция с id={item_id} удалена.'
+        return text
+
+    @staticmethod
+    def user_products_out_of_stock_while_change(item_id: int) -> str:
+        text = f'К сожалению, товар с <b>ID {item_id}</b> закончился'
         return text
 
 
